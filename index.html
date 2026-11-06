@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>FOTOCOPIADORA</title>
+  <meta name="description" content="Convierte fotos de tarjetas en una fotocopia lista para imprimir.">
+  <meta name="theme-color" content="#1d4ed8">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/favicon-64.png" type="image/png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <div class="wrap top-inner">
+      <img class="logo" src="icons/logo-128.png" alt="" width="44" height="44">
+      <h1>FOTOCOPIADORA</h1>
+      <button class="gear-btn" id="settingsButton" type="button" aria-label="Abrir ajustes" title="Ajustes">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.25a3.75 3.75 0 1 0 0 7.5 3.75 3.75 0 0 0 0-7.5Z"/><path d="m19.4 13.5 1.3 1-1.3 2.25-1.55-.48a7.6 7.6 0 0 1-1.2.7l-.25 1.6h-2.6l-.26-1.6a7.6 7.6 0 0 1-1.2-.7l-1.54.48-1.3-2.25 1.28-1a7 7 0 0 1 0-1.4l-1.28-1 1.3-2.25 1.54.48c.37-.29.77-.52 1.2-.7l.26-1.6h2.6l.25 1.6c.44.18.84.41 1.2.7l1.55-.48 1.3 2.25-1.3 1a7 7 0 0 1 0 1.4Z" transform="translate(-1.5 -1.5) scale(.92)"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div id="engineStatus" class="banner" role="status" aria-live="polite">
+      <span id="engineMessage">Descargando motor de imagen (unos 13 MB, solo la primera vez)&hellip;</span>
+      <progress id="engineProgress" max="100" value="0" aria-label="Progreso de descarga del motor"></progress>
+      <button id="engineRetry" class="btn" type="button" hidden>Reintentar</button>
+    </div>
+
+    <section class="card" aria-label="Fotografías de la tarjeta">
+      <div class="tabs" role="tablist">
+        <button class="tab active" role="tab" data-side="front" id="tab-front">Anverso <span class="ok" hidden>&#10003;</span></button>
+        <button class="tab" role="tab" data-side="back" id="tab-back">Reverso <span class="ok" hidden>&#10003;</span></button>
+        <button class="tab" role="tab" data-side="sign" id="tab-sign">Firma <span class="ok" hidden>&#10003;</span></button>
+      </div>
+
+      <div class="actions">
+        <button class="btn primary" id="btnCamera" disabled>Tomar foto</button>
+        <button class="btn" id="btnPick" disabled>Elegir imagen</button>
+        <input type="file" id="inCamera" accept="image/*" capture="environment" hidden>
+        <input type="file" id="inPick" accept="image/*" hidden>
+      </div>
+
+      <div id="sidePanel">
+      <div id="editorWrap" class="editor">
+        <div id="placeholder" class="placeholder">
+          <p><strong id="phSide">Anverso</strong></p>
+        </div>
+        <canvas id="editor" hidden></canvas>
+      </div>
+      <p class="hint" id="editorHint" hidden>Arrastra los 4 puntos hasta las esquinas de la tarjeta si la detección no quedó exacta. La línea naranja marca el borde que quedará arriba.</p>
+
+      <div class="actions" id="editorActions" hidden>
+        <button class="btn" id="btnDetect">Detectar de nuevo</button>
+        <button class="btn" id="btnRotate">Girar 90&deg;</button>
+        <button class="btn ghost" id="btnClear">Quitar</button>
+      </div>
+      </div>
+
+      <div id="signPanel" hidden>
+        <div id="signWrap" class="editor">
+          <div id="signPlaceholder" class="placeholder">
+            <p><strong>Firma</strong></p>
+            <p>Toma o elige una foto de tu firma hecha con lapicero sobre una hoja blanca.</p>
+          </div>
+          <canvas id="signCrop" hidden></canvas>
+        </div>
+        <p class="hint" id="signHint" hidden>Arrastra las 4 esquinas para dejar dentro solo la firma (sin el borde de la hoja ni la mesa). El fondo se vuelve transparente y la tinta queda azul.</p>
+
+        <div id="signControls" hidden>
+          <div class="grid2 sign-sliders">
+            <label>Sensibilidad <output id="oSignSens">50</output>
+              <input type="range" id="sSignSens" min="0" max="100" step="1" value="50">
+            </label>
+            <label>Tamaño <output id="oSignW">55 mm</output>
+              <input type="range" id="sSignW" min="20" max="90" step="1" value="55">
+            </label>
+          </div>
+          <div class="checker" id="signPrevWrap"><canvas id="signPrev"></canvas></div>
+          <p class="hint" id="signNone" hidden>No encontré trazos. Sube la sensibilidad o recorta mejor la firma.</p>
+          <p class="hint" id="signNote"></p>
+          <div class="actions">
+            <button class="btn" id="btnSignRotate">Girar 90&deg;</button>
+            <button class="btn" id="btnSignPng">Descargar firma PNG</button>
+            <button class="btn ghost" id="btnSignClear">Quitar</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <dialog class="settings-dialog" id="settingsDialog" aria-labelledby="settingsTitle">
+      <div class="settings-head">
+        <h2 id="settingsTitle">Ajustes</h2>
+        <button class="close-settings" id="closeSettings" type="button" aria-label="Cerrar ajustes">&times;</button>
+      </div>
+      <div class="grid">
+          <label>Hoja
+            <select id="sPaper">
+              <option value="letter">Carta (8,5 &times; 11 in)</option>
+              <option value="a4">A4</option>
+            </select>
+          </label>
+          <label>Disposición
+            <select id="sLayout">
+              <option value="one">Anverso y reverso en una sola hoja</option>
+              <option value="two">Una hoja por cada lado</option>
+            </select>
+          </label>
+          <label>Efecto
+            <select id="sMode">
+              <option value="gray">Escala de grises (fotocopia)</option>
+              <option value="bw">Blanco y negro</option>
+              <option value="color">Color limpio</option>
+            </select>
+          </label>
+          <label>Contraste <output id="oContrast">55</output>
+            <input type="range" id="sContrast" min="0" max="100" step="5" value="55">
+          </label>
+          <label>Esquinas
+            <select id="sRadius">
+              <option value="auto">Automático (las mide de la foto)</option>
+              <option value="standard">Estándar de tarjeta (3,18 mm)</option>
+              <option value="manual">Manual</option>
+              <option value="none">Rectas (90&deg;)</option>
+            </select>
+          </label>
+          <label id="lRadiusMm" hidden>Radio (mm)
+            <input type="number" id="sRadiusMm" min="0" max="12" step="0.1" value="3.18">
+          </label>
+          <label>Tamaño
+            <select id="sSize">
+              <option value="id1">Tarjeta estándar (85,6 &times; 54 mm)</option>
+              <option value="custom">Personalizado</option>
+            </select>
+          </label>
+          <div id="customSize" class="grid2" hidden>
+            <label>Ancho (mm) <input type="number" id="sW" min="20" max="200" step="0.1" value="85.6"></label>
+            <label>Alto (mm) <input type="number" id="sH" min="20" max="200" step="0.1" value="54"></label>
+          </div>
+          <label class="check"><input type="checkbox" id="sBorder" checked> Borde fino alrededor, como en una copiadora</label>
+      </div>
+    </dialog>
+
+    <section class="card" aria-label="Vista previa para imprimir">
+      <div class="pagewrap"><canvas id="page"></canvas></div>
+      <p class="info" id="info" hidden></p>
+      <div class="actions">
+        <button class="btn primary" id="btnPdf" disabled>Descargar PDF</button>
+        <button class="btn" id="btnOpen" disabled>Abrir para imprimir</button>
+        <button class="btn" id="btnShare" hidden>Compartir</button>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+  <div id="busy" class="busy" hidden><div class="spin"></div><span id="busyText">Procesando&hellip;</span></div>
+
+  <script src="vendor/pdf-lib.min.js"></script>
+  <script src="js/core.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
