@@ -10,6 +10,8 @@
 
   // Tarjeta ISO/IEC 7810 ID-1 (cédulas, licencias, tarjetas bancarias): 85,60 x 53,98 mm, radio de esquina 3,18 mm
   const ID1 = { w: 85.6, h: 53.98, r: 3.18 };
+  // Resolución máxima de la copia (ppp). Más alto = más detalle pero PDF más pesado.
+  const MAX_DPI = 450;
 
   const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -411,22 +413,75 @@
 
       const out = new Uint8ClampedArray(N * 4);
       if (mode === 'bw') {
-        const lm = T(cv.matFromArray(H, W, cv.CV_8UC1, Array.from(lum)));
+        const lm = T(new cv.Mat(H, W, cv.CV_8UC1));
+        lm.data.set(lum);
+        // Texto y líneas: umbral adaptativo (queda nítido).
         const bin = T(new cv.Mat());
         cv.adaptiveThreshold(lm, bin, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, odd(dpi * 0.1), 18 - 10 * c);
         const bd = bin.data;
         const tLow = black + 0.3 * (white - black), tHigh = black + 0.82 * (white - black);
+
+        // Zonas suaves (fotos, sombreados): un umbral duro las deja en manchas, así que ahí se usa
+        // tramado por difusión de error (como una copiadora) y la foto conserva su detalle.
+        // Zonas con bordes fuertes (texto, líneas, contornos): umbral adaptativo, nítido.
+        // Tonos de foto: niveles suaves (los del documento mandan los claros a blanco y borran las caras).
+        const bP = Math.min(60, percentile(lh, N, 0.002)), wP = Math.max(200, percentile(lh, N, 0.998));
+        const lutP = new Uint8ClampedArray(256), tp = 0.5 * c;
+        for (let v = 0; v < 256; v++) {
+          const lin = clamp((v - bP * c) / Math.max(1, (255 - (255 - wP) * c) - bP * c), 0, 1);
+          lutP[v] = Math.round(255 * (lin * (1 - tp) + lin * lin * (3 - 2 * lin) * tp));
+        }
+        const tm = T(new cv.Mat(H, W, cv.CV_8UC1)), tmd = tm.data;
+        for (let i = 0; i < N; i++) tmd[i] = lutP[Math.round(lum[i])];
+        const rk = odd(Math.max(3, dpi * 0.017));
+        const kr = T(cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(rk, rk)));
+        const dil = T(new cv.Mat()), ero = T(new cv.Mat());
+        cv.dilate(tm, dil, kr); cv.erode(tm, ero, kr);
+        const dd = dil.data, ed = ero.data;
+
+        // difusión de error Floyd–Steinberg (recorrido en zigzag) sobre la luminancia con contraste
+        const tone = new Float32Array(N);
+        for (let i = 0; i < N; i++) tone[i] = Math.min(255, tmd[i] * 255 / 238);   // los casi-blancos son papel: sin puntitos
+        const res = new Uint8Array(N);
+        for (let y = 0; y < H; y++) {
+          const ltr = (y & 1) === 0, row = y * W;
+          for (let n = 0; n < W; n++) {
+            const x = ltr ? n : W - 1 - n, i = row + x;
+            const old = tone[i], nv = old < 128 ? 0 : 255, err = old - nv;
+            res[i] = nv;
+            const dx = ltr ? 1 : -1;
+            if (x + dx >= 0 && x + dx < W) tone[i + dx] += err * 7 / 16;
+            if (y + 1 < H) {
+              if (x - dx >= 0 && x - dx < W) tone[i + W - dx] += err * 3 / 16;
+              tone[i + W] += err * 5 / 16;
+              if (x + dx >= 0 && x + dx < W) tone[i + W + dx] += err * 1 / 16;
+            }
+          }
+        }
         for (let i = 0; i < N; i++) {
-          let v = bd[i];
-          if (lum[i] < tLow) v = 0; else if (lum[i] > tHigh) v = 255;
+          let v;
+          if (dd[i] - ed[i] < 60) v = res[i];                 // zona suave: tramado
+          else { v = bd[i]; if (lum[i] < tLow) v = 0; else if (lum[i] > tHigh) v = 255; }
           out[i * 4] = v; out[i * 4 + 1] = v; out[i * 4 + 2] = v; out[i * 4 + 3] = 255;
         }
       } else if (mode === 'color') {
+        // "Color limpio" respeta los colores de la tarjeta: sin recortar blancos por la mediana
+        // (eso aplastaba tarjetas de color). Con contraste 0 queda casi igual a la foto.
+        const bC = Math.min(60, percentile(lh, N, 0.002));
+        const wC = Math.max(190, percentile(lh, N, 0.998));
+        const lo = bC * c, hi = 255 - (255 - wC) * c, tc = 0.5 * c;
+        const lutC = new Uint8ClampedArray(256);
+        for (let v = 0; v < 256; v++) {
+          const lin = clamp((v - lo) / Math.max(1, hi - lo), 0, 1);
+          const sc = lin * lin * (3 - 2 * lin);
+          lutC[v] = Math.round(255 * (lin * (1 - tc) + sc * tc));
+        }
+        const gs = 0.3 + 0.7 * c;                       // fuerza de la corrección de sombras
         for (let i = 0; i < N; i++) {
-          const g = gain[i];
-          out[i * 4] = lut[Math.min(255, Math.round(rd[i * 3] * g))];
-          out[i * 4 + 1] = lut[Math.min(255, Math.round(rd[i * 3 + 1] * g))];
-          out[i * 4 + 2] = lut[Math.min(255, Math.round(rd[i * 3 + 2] * g))];
+          const g = 1 + (gain[i] - 1) * gs;
+          out[i * 4] = lutC[Math.min(255, Math.round(rd[i * 3] * g))];
+          out[i * 4 + 1] = lutC[Math.min(255, Math.round(rd[i * 3 + 1] * g))];
+          out[i * 4 + 2] = lutC[Math.min(255, Math.round(rd[i * 3 + 2] * g))];
           out[i * 4 + 3] = 255;
         }
       } else {
@@ -538,19 +593,41 @@
     return img;
   }
 
+  // Máscara de nitidez suave: recupera el detalle que se pierde al enderezar/reescalar la foto.
+  function sharpen(cv, mat, dpi, amount) {
+    if (!(amount > 0)) return;
+    const blur = new cv.Mat();
+    try {
+      cv.GaussianBlur(mat, blur, new cv.Size(0, 0), Math.max(0.8, dpi * 0.0055));
+      cv.addWeighted(mat, 1 + amount, blur, -amount, 0, mat);
+    } finally { blur.delete(); }
+  }
+
   // Proceso completo de una cara. size = {w,h,r} (mm)
   function renderCard(cv, src, corners, k, opts) {
     const size = opts.size || ID1;
-    const dpi = opts.dpi || 300;
+    const baseDpi = opts.dpi || 300;
     const dims = cardDimsMm(corners, k, size);
-    const warped = warpCard(cv, src, corners, k, dims.mmW, dims.mmH, dpi, 0);
+    // Resolución: la de la foto (sin inventar más), entre 300 y MAX_DPI ppp.
+    const natural = quadSides(cycle(corners, k)).w / (dims.mmW / 25.4);
+    const dpi = Math.round(clamp(natural, baseDpi, Math.max(baseDpi, MAX_DPI)));
+    // Si la foto tiene bastante más resolución, se endereza al doble y se reduce con INTER_AREA
+    // (reducir de golpe con la transformación de perspectiva produce dientes de sierra).
+    const warpDpi = natural > dpi * 1.25 ? Math.min(Math.round(natural), dpi * 2) : dpi;
+    const warped = warpCard(cv, src, corners, k, dims.mmW, dims.mmH, warpDpi, 0);
     try {
+      if (warpDpi !== dpi) {
+        const small = new cv.Mat();
+        cv.resize(warped.mat, small, new cv.Size(Math.round(dims.mmW / 25.4 * dpi), Math.round(dims.mmH / 25.4 * dpi)), 0, 0, cv.INTER_AREA);
+        warped.mat.delete(); warped.mat = small;
+      }
+      sharpen(cv, warped.mat, dpi, opts.sharpen == null ? 0.5 : opts.sharpen);
       const img = photocopy(cv, warped.mat, { mode: opts.mode, contrast: opts.contrast, dpi });
       const std = size.r != null ? size.r : ID1.r;
       const mode = opts.radiusMode || 'auto';
       let measured = null, rMm = std;
       if (mode === 'auto') {
-        try { measured = measureRadius(cv, src, corners, k, dims, dpi); } catch (e) { measured = null; }
+        try { measured = measureRadius(cv, src, corners, k, dims, baseDpi); } catch (e) { measured = null; }
         rMm = measured == null ? std : clamp(measured, 0.7 * std, 1.4 * std);
       } else if (mode === 'manual') {
         rMm = Math.max(0, opts.radiusMm || 0);
