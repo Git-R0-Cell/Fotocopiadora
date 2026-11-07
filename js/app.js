@@ -277,6 +277,40 @@
     }, 250);
   }
 
+  // ------------------------------------------------------------ lupa
+
+  // Lupa para ajustar esquinas: el dedo tapa lo que se está tocando, así que se muestra ampliada
+  // la zona de la esquina en un círculo arriba (a la izquierda, o a la derecha si el dedo está ahí).
+  //   g, cw, ch: contexto y tamaño del canvas   dpr: densidad de pixeles
+  //   src: canvas con la foto original          pt: esquina en px de la foto
+  //   here: esquina en px del canvas            L: px de canvas por px de foto dentro de la lupa
+  //   lines: puntos vecinos (px de la foto) para dibujar los bordes del recuadro dentro de la lupa
+  function drawLoupe(g, cw, ch, dpr, src, pt, here, L, lines) {
+    const R = Math.min(66 * dpr, ch * 0.34, cw * 0.3), m = 8 * dpr;
+    if (R < 20) return;
+    let cx = m + R;
+    const cy = m + R;
+    if (Math.hypot(here.x - cx, here.y - cy) < R + 60 * dpr) cx = cw - m - R;   // lejos de donde está el dedo
+    const half = R / L;
+    g.save();
+    g.beginPath(); g.arc(cx, cy, R, 0, Math.PI * 2); g.clip();
+    g.fillStyle = '#fff'; g.fillRect(cx - R, cy - R, 2 * R, 2 * R);
+    g.drawImage(src, pt.x - half, pt.y - half, 2 * half, 2 * half, cx - R, cy - R, 2 * R, 2 * R);
+    g.lineCap = 'round';
+    g.strokeStyle = '#1d4ed8'; g.lineWidth = 2 * dpr;           // bordes del recuadro
+    lines.forEach(n => {
+      g.beginPath(); g.moveTo(cx, cy); g.lineTo(cx + (n.x - pt.x) * L, cy + (n.y - pt.y) * L); g.stroke();
+    });
+    g.lineWidth = 1 * dpr; g.strokeStyle = 'rgba(29,78,216,0.9)';   // mira
+    g.beginPath(); g.moveTo(cx - R, cy); g.lineTo(cx + R, cy); g.moveTo(cx, cy - R); g.lineTo(cx, cy + R); g.stroke();
+    g.restore();
+    g.save();
+    g.beginPath(); g.arc(cx, cy, R, 0, Math.PI * 2);
+    g.lineWidth = 5 * dpr; g.strokeStyle = '#fff'; g.stroke();
+    g.lineWidth = 3 * dpr; g.strokeStyle = '#1d4ed8'; g.stroke();
+    g.restore();
+  }
+
   // ------------------------------------------------------------ editor de esquinas
 
   const editor = $('#editor');
@@ -325,6 +359,12 @@
       ectx.lineWidth = 3 * dpr; ectx.strokeStyle = '#1d4ed8'; ectx.stroke();
     });
     ectx.restore();
+
+    if (drag) {
+      const i = drag.idx, n = s.corners.length;
+      drawLoupe(ectx, editor.width, editor.height, dpr, s.canvas, s.corners[i], c[i], Math.max(4 * f, 1.2),
+        [s.corners[(i + 1) % n], s.corners[(i + n - 1) % n]]);
+    }
   }
 
   function pointerToImage(ev) {
@@ -338,11 +378,13 @@
     if (!s.corners) return;
     const p = pointerToImage(ev);
     const r = editor.getBoundingClientRect();
-    const hit = 30 * (s.w / r.width);   // 30 px de pantalla
+    const hit = 60 * (s.w / r.width);   // 60 px de pantalla: se puede tocar al lado de la esquina
     let best = -1, bd = Infinity;
     s.corners.forEach((c, i) => { const d = Math.hypot(c.x - p.x, c.y - p.y); if (d < bd) { bd = d; best = i; } });
     if (best >= 0 && bd <= hit) {
-      drag = { idx: best };
+      // se conserva la distancia entre el dedo y la esquina: la esquina se mueve con el dedo sin saltar
+      drag = { idx: best, dx: s.corners[best].x - p.x, dy: s.corners[best].y - p.y };
+      drawEditor();
       editor.setPointerCapture(ev.pointerId);
       ev.preventDefault();
     }
@@ -351,7 +393,7 @@
   editor.addEventListener('pointermove', ev => {
     if (!drag) return;
     const s = sides[active], p = pointerToImage(ev);
-    s.corners[drag.idx] = { x: Math.min(s.w, Math.max(0, p.x)), y: Math.min(s.h, Math.max(0, p.y)) };
+    s.corners[drag.idx] = { x: Math.min(s.w, Math.max(0, p.x + drag.dx)), y: Math.min(s.h, Math.max(0, p.y + drag.dy)) };
     s.method = 'manual';
     drawEditor();
   });
@@ -359,6 +401,7 @@
   const endDrag = async ev => {
     if (!drag) return;
     drag = null;
+    drawEditor();                                   // quita la lupa
     try { editor.releasePointerCapture(ev.pointerId); } catch (e) { /* ya liberado */ }
     const name = active;
     busy(true, 'Actualizando…');
@@ -711,6 +754,13 @@
     });
     sctx.restore();
 
+    if (sdrag) {
+      const i = sdrag.idx, cs = signCorners();
+      drawLoupe(sctx, signCanvas.width, signCanvas.height, dpr, sig.src, cs[i],
+        { x: pad + cs[i].x * f, y: pad + cs[i].y * f }, Math.max(4 * f, 1.2),
+        [cs[(i + 1) % 4], cs[(i + 3) % 4]]);
+    }
+
     drawSignPreview();
   }
 
@@ -749,11 +799,13 @@
   signCanvas.addEventListener('pointerdown', ev => {
     if (!sig.src) return;
     const p = signPointer(ev), r = signCanvas.getBoundingClientRect();
-    const hit = 34 * (signCanvas.width / r.width) / sview.f;   // 34 px de pantalla, en px de foto
+    const hit = 60 * (signCanvas.width / r.width) / sview.f;   // 60 px de pantalla, en px de foto
     let best = -1, bd = Infinity;
     signCorners().forEach((c, i) => { const d = Math.hypot(c.x - p.x, c.y - p.y); if (d < bd) { bd = d; best = i; } });
     if (best >= 0 && bd <= hit) {
-      sdrag = { idx: best };
+      const cc = signCorners()[best];
+      sdrag = { idx: best, dx: cc.x - p.x, dy: cc.y - p.y };
+      drawSignCrop();
       signCanvas.setPointerCapture(ev.pointerId);
       ev.preventDefault();
     }
@@ -762,7 +814,7 @@
   signCanvas.addEventListener('pointermove', ev => {
     if (!sdrag) return;
     const p = signPointer(ev), c = sig.crop, min = Math.max(20, 0.04 * Math.max(sig.src.width, sig.src.height));
-    const x = Math.min(sig.src.width, Math.max(0, p.x)), y = Math.min(sig.src.height, Math.max(0, p.y));
+    const x = Math.min(sig.src.width, Math.max(0, p.x + sdrag.dx)), y = Math.min(sig.src.height, Math.max(0, p.y + sdrag.dy));
     if (sdrag.idx === 0 || sdrag.idx === 3) c.x0 = Math.min(x, c.x1 - min); else c.x1 = Math.max(x, c.x0 + min);
     if (sdrag.idx === 0 || sdrag.idx === 1) c.y0 = Math.min(y, c.y1 - min); else c.y1 = Math.max(y, c.y0 + min);
     drawSignCrop();
@@ -771,6 +823,7 @@
   const endSignDrag = async ev => {
     if (!sdrag) return;
     sdrag = null;
+    drawSignCrop();                                 // quita la lupa
     try { signCanvas.releasePointerCapture(ev.pointerId); } catch (e) { /* ya liberado */ }
     busy(true, 'Quitando el fondo…');
     await nextFrame();
